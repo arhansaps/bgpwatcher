@@ -2,19 +2,21 @@
 BGP Stream Ingestor
 
 Connects to the RIPE RIS Live WebSocket feed, subscribes to UPDATE messages,
-and emits normalized BGP route events (one per announced/withdrawn prefix).
-
-For now this just logs events to stdout. Once Kafka is wired up, normalized
-events will be published to the `bgp.raw` topic instead.
+normalizes them into per-prefix events, and publishes each event to the
+Kafka `bgp.raw` topic.
 """
 
 import asyncio
 import json
 import logging
+import os
 
 import websockets
+from aiokafka import AIOKafkaProducer
 
 RIS_LIVE_URL = "wss://ris-live.ripe.net/v1/ws/?client=bgpwatch"
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+KAFKA_TOPIC = "bgp.raw"
 
 SUBSCRIBE_MESSAGE = {
     "type": "ris_subscribe",
@@ -70,24 +72,45 @@ def normalize_update(msg: dict):
     return events
 
 
-async def consume():
-    async for ws in websockets.connect(RIS_LIVE_URL, ping_interval=20, ping_timeout=20):
+async def get_producer():
+    producer = AIOKafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        key_serializer=lambda k: k.encode("utf-8") if k else None,
+    )
+    while True:
         try:
-            log.info("connected to RIS Live")
-            await ws.send(json.dumps(SUBSCRIBE_MESSAGE))
+            await producer.start()
+            log.info("connected to Kafka at %s", KAFKA_BOOTSTRAP_SERVERS)
+            return producer
+        except Exception as exc:
+            log.warning("kafka not ready (%s), retrying in 5s", exc)
+            await asyncio.sleep(5)
 
-            async for raw in ws:
-                msg = json.loads(raw)
 
-                if msg.get("type") != "ris_message":
-                    continue
+async def consume():
+    producer = await get_producer()
 
-                for event in normalize_update(msg):
-                    log.info(json.dumps(event))
+    try:
+        async for ws in websockets.connect(RIS_LIVE_URL, ping_interval=20, ping_timeout=20):
+            try:
+                log.info("connected to RIS Live")
+                await ws.send(json.dumps(SUBSCRIBE_MESSAGE))
 
-        except websockets.ConnectionClosed:
-            log.warning("connection closed, reconnecting...")
-            continue
+                async for raw in ws:
+                    msg = json.loads(raw)
+
+                    if msg.get("type") != "ris_message":
+                        continue
+
+                    for event in normalize_update(msg):
+                        await producer.send_and_wait(KAFKA_TOPIC, value=event, key=event["prefix"])
+
+            except websockets.ConnectionClosed:
+                log.warning("connection closed, reconnecting...")
+                continue
+    finally:
+        await producer.stop()
 
 
 if __name__ == "__main__":
