@@ -14,6 +14,9 @@ services:
       - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
       - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
       - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_LOG_RETENTION_HOURS=6
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
 
   ingestor:
     build: ./ingestor
@@ -22,3 +25,51 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     restart: on-failure
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=bgpwatch
+      - POSTGRES_PASSWORD=bgpwatch
+      - POSTGRES_DB=bgpwatch
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./state/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  state:
+    build: ./state
+    depends_on:
+      - kafka
+      - redis
+      - postgres
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_HOST=redis
+      - POSTGRES_DSN=postgresql://bgpwatch:bgpwatch@postgres:5432/bgpwatch
+    restart: on-failure
+
+  detector:
+    build: ./detector
+    depends_on:
+      - kafka
+      - redis
+      - postgres
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_HOST=redis
+      - POSTGRES_DSN=postgresql://bgpwatch:bgpwatch@postgres:5432/bgpwatch
+    restart: on-failure
+
+volumes:
+  kafka_data:
+  redis_data:
+  postgres_data:
