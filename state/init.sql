@@ -24,7 +24,9 @@ CREATE TABLE bgp_anomalies (
     peer_asn        BIGINT,
     old_origin_asn  BIGINT,
     new_origin_asn  BIGINT,
-    as_path         JSONB
+    as_path         JSONB,
+    anomaly_score   DOUBLE PRECISION,
+    triggered_rules JSONB
 );
 
 SELECT create_hypertable('bgp_anomalies', 'time');

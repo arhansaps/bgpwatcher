@@ -67,6 +67,9 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - REDIS_HOST=redis
       - POSTGRES_DSN=postgresql://bgpwatch:bgpwatch@postgres:5432/bgpwatch
+      - MODEL_PATH=/app/model.joblib
+    volumes:
+      - ./detector/model.joblib:/app/model.joblib:ro
     restart: on-failure
 
 volumes:
